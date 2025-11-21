@@ -5,6 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ごまめちゃんの大冒険</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM (UMD) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel Standalone for in-browser compilation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
     <style>
       body {
         margin: 0;
@@ -20,13 +26,24 @@
       canvas {
         image-rendering: pixelated; /* ドット絵をくっきり表示 */
       }
+      /* Custom Scrollbar */
+      ::-webkit-scrollbar {
+        width: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #1f2937; 
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #4b5563; 
+        border-radius: 4px;
+      }
     </style>
 <script type="importmap">
 {
   "imports": {
+    "react": "https://aistudiocdn.com/react@^19.2.0",
     "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
     "react/": "https://aistudiocdn.com/react@^19.2.0/",
-    "react": "https://aistudiocdn.com/react@^19.2.0",
     "lucide-react": "https://aistudiocdn.com/lucide-react@^0.554.0"
   }
 }
@@ -35,6 +52,567 @@
 </head>
 <body>
     <div id="root"></div>
+
+    <!-- MAIN SCRIPT: Contains all Game Logic & UI -->
+    <script type="text/babel" data-presets="typescript,react">
+      const { useState, useEffect, useRef } = React;
+
+      // --- ICONS (SVG Replacements for Lucide) ---
+      const Icons = {
+        Play: () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>,
+        RotateCcw: () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 12"/><path d="M3 3v9h9"/></svg>,
+        Repeat: () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>,
+        ArrowRight: () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>,
+        AlertCircle: () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+      };
+
+      // --- CONSTANTS ---
+      const CANVAS_WIDTH = 800;
+      const CANVAS_HEIGHT = 600;
+
+      const PHYSICS = {
+        GRAVITY: 0.6,
+        FRICTION: 0.8,
+        MOVE_SPEED: 5,
+        JUMP_FORCE: -14,
+        MAX_FALL_SPEED: 15,
+        ENEMY_SPEED: 2,
+      };
+
+      const COLORS = {
+        TEXT: '#FFFFFF',
+        STAGE1: { SKY: '#87CEEB', PLATFORM: '#B45F06', GROUND_TOP: '#4ade80' },
+        STAGE2: { SKY: '#2D3748', PLATFORM: '#4A5568', GROUND_TOP: '#718096' },
+        STAGE3: { SKY: '#E0F2F1', PLATFORM: '#FFFFFF', GROUND_TOP: '#B2DFDB' },
+        STAGE4: { SKY: '#1A202C', PLATFORM: '#742A2A', GROUND_TOP: '#9B2C2C' },
+        ENEMY: '#ef4444',
+        GOAL: '#fbbf24'
+      };
+
+      const PLAYER_SIZE = { w: 40, h: 40 };
+
+      // --- TYPES ---
+      // (Enums in TypeScript become objects in JS output, but we define them manually for safety in Babel)
+      const EntityType = {
+        PLAYER: 0,
+        PLATFORM: 1,
+        ENEMY: 2,
+        GOAL: 3,
+        PIT: 4
+      };
+
+      const GameStatus = {
+        MENU: 0,
+        PLAYING: 1,
+        GAME_OVER: 2,
+        VICTORY: 3,
+        LEVEL_COMPLETE: 4
+      };
+
+      // --- LEVEL GENERATOR ---
+      const generateLevel = (levelNum) => {
+        const platforms = [];
+        const enemies = [];
+        const pits = [];
+        let theme = COLORS.STAGE1;
+
+        const addPlat = (x, y, w, h) => {
+          platforms.push({
+            id: `plat-${Math.random()}`,
+            type: EntityType.PLATFORM,
+            x, y, w, h,
+            color: theme.PLATFORM
+          });
+        };
+
+        const addEnemy = (x, y, patrolDist) => {
+          enemies.push({
+            id: `enemy-${Math.random()}`,
+            type: EntityType.ENEMY,
+            x, y, w: 40, h: 40,
+            vx: PHYSICS.ENEMY_SPEED,
+            patrolStart: x,
+            patrolEnd: x + patrolDist,
+            isDead: false,
+            color: COLORS.ENEMY
+          });
+        };
+
+        switch (levelNum) {
+          case 1: // Grassland
+            theme = COLORS.STAGE1;
+            addPlat(0, CANVAS_HEIGHT - 60, 800, 60);
+            addPlat(900, CANVAS_HEIGHT - 150, 200, 40);
+            addPlat(1200, CANVAS_HEIGHT - 250, 200, 40);
+            addEnemy(1250, CANVAS_HEIGHT - 290, 100);
+            addPlat(1500, CANVAS_HEIGHT - 200, 600, 200);
+            addEnemy(1600, CANVAS_HEIGHT - 240, 300);
+            addPlat(2200, CANVAS_HEIGHT - 350, 100, 40);
+            addPlat(2400, CANVAS_HEIGHT - 350, 100, 40);
+            addPlat(2600, CANVAS_HEIGHT - 60, 800, 60);
+            break;
+          case 2: // Cave
+            theme = COLORS.STAGE2;
+            addPlat(0, CANVAS_HEIGHT - 60, 400, 60);
+            addPlat(450, CANVAS_HEIGHT - 150, 100, 40);
+            addPlat(600, CANVAS_HEIGHT - 250, 100, 40);
+            addPlat(750, CANVAS_HEIGHT - 150, 100, 40);
+            addPlat(900, CANVAS_HEIGHT - 60, 1000, 60);
+            addEnemy(1000, CANVAS_HEIGHT - 100, 200);
+            addEnemy(1400, CANVAS_HEIGHT - 100, 200);
+            addEnemy(1700, CANVAS_HEIGHT - 100, 100);
+            addPlat(2000, CANVAS_HEIGHT - 200, 80, 20);
+            addPlat(2150, CANVAS_HEIGHT - 300, 80, 20);
+            addPlat(2300, CANVAS_HEIGHT - 200, 80, 20);
+            addPlat(2500, CANVAS_HEIGHT - 60, 600, 60);
+            break;
+          case 3: // Sky
+            theme = COLORS.STAGE3;
+            addPlat(0, CANVAS_HEIGHT - 60, 300, 60);
+            addPlat(400, CANVAS_HEIGHT - 150, 150, 30);
+            addPlat(650, CANVAS_HEIGHT - 250, 150, 30);
+            addEnemy(680, CANVAS_HEIGHT - 290, 80);
+            addPlat(900, CANVAS_HEIGHT - 350, 150, 30);
+            addPlat(1200, CANVAS_HEIGHT - 250, 150, 30);
+            addPlat(1500, CANVAS_HEIGHT - 400, 400, 30);
+            addEnemy(1600, CANVAS_HEIGHT - 440, 200);
+            addPlat(2000, CANVAS_HEIGHT - 400, 60, 20);
+            addPlat(2200, CANVAS_HEIGHT - 400, 60, 20);
+            addPlat(2400, CANVAS_HEIGHT - 400, 60, 20);
+            addPlat(2600, CANVAS_HEIGHT - 150, 600, 150);
+            break;
+          case 4: // Castle
+            theme = COLORS.STAGE4;
+            addPlat(0, CANVAS_HEIGHT - 60, 300, 60);
+            addPlat(350, CANVAS_HEIGHT - 150, 50, 200);
+            addPlat(500, CANVAS_HEIGHT - 250, 50, 300);
+            addPlat(700, CANVAS_HEIGHT - 200, 800, 40);
+            addEnemy(800, CANVAS_HEIGHT - 240, 100);
+            addEnemy(1000, CANVAS_HEIGHT - 240, 100);
+            addEnemy(1200, CANVAS_HEIGHT - 240, 100);
+            addPlat(1600, CANVAS_HEIGHT - 350, 100, 20);
+            addPlat(1800, CANVAS_HEIGHT - 450, 100, 20);
+            addPlat(2100, CANVAS_HEIGHT - 300, 800, 20);
+            addEnemy(2200, CANVAS_HEIGHT - 340, 600);
+            addPlat(3000, CANVAS_HEIGHT - 60, 500, 60);
+            break;
+          default:
+            theme = COLORS.STAGE1;
+            addPlat(0, CANVAS_HEIGHT - 60, 800, 60);
+        }
+
+        const lastPlat = platforms[platforms.length - 1];
+        const goal = {
+          id: 'goal',
+          type: EntityType.GOAL,
+          x: lastPlat.x + lastPlat.w - 100,
+          y: lastPlat.y - 100,
+          w: 20, h: 100,
+          color: COLORS.GOAL
+        };
+
+        return { platforms, enemies, goal, pits, theme };
+      };
+
+      // --- GAME ENGINE ---
+      class GameEngine {
+        constructor(ctx, onGameOver, onVictory, onLevelComplete, onScoreUpdate) {
+          this.ctx = ctx;
+          this.onGameOver = onGameOver;
+          this.onVictory = onVictory;
+          this.onLevelComplete = onLevelComplete;
+          this.onScoreUpdate = onScoreUpdate;
+
+          this.status = GameStatus.MENU;
+          this.player = this.createInitialPlayer();
+          this.platforms = [];
+          this.enemies = [];
+          this.goal = null;
+          this.keys = {};
+          this.cameraX = 0;
+          
+          this.score = 0;
+          this.scoreAtLevelStart = 0;
+          this.currentLevel = 1;
+          this.maxLevels = 4;
+          this.currentTheme = COLORS.STAGE1;
+
+          this.playerImage = new Image();
+          this.playerImage.src = this.generateCharacterSprite();
+          this.isImageLoaded = true;
+        }
+
+        generateCharacterSprite() {
+          const canvas = document.createElement('canvas');
+          const size = 32;
+          canvas.width = size;
+          canvas.height = size;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return '';
+
+          const P = {
+            _: 'rgba(0,0,0,0)', H: '#5D4037', G: '#00E676', S: '#FFCCBC',
+            E: '#F57F17', W: '#FFF9C4', I: '#FFFFFF', B: '#3E2723'
+          };
+
+          const spriteMap = [
+            "________________", "____HHHHHH______", "___HHHHHHHH_____", "__HHHGGHHGGH____",
+            "__HHHHHHHHHH____", "__HHSESSSESH____", "__HHSSSSSSSH____", "___HSSSSSSSH____",
+            "___GGHSSSHGG____", "____WWIIWW______", "____WWIIWW______", "___BWWWWWWB_____",
+            "___W_WWWW_W_____", "___W_WWWW_W_____", "_____WWWW_______", "________________"
+          ];
+
+          const pixelSize = 2;
+          spriteMap.forEach((row, y) => {
+            for (let x = 0; x < row.length; x++) {
+              const char = row[x];
+              if (P[char] && P[char] !== P._) {
+                ctx.fillStyle = P[char];
+                ctx.fillRect(x * pixelSize, y * pixelSize, pixelSize, pixelSize);
+              }
+            }
+          });
+          return canvas.toDataURL();
+        }
+
+        createInitialPlayer() {
+          return {
+            id: 'player',
+            type: EntityType.PLAYER,
+            x: 100, y: 300, w: PLAYER_SIZE.w, h: PLAYER_SIZE.h,
+            vx: 0, vy: 0, isGrounded: false, facingRight: true
+          };
+        }
+
+        start(level = 1) {
+          this.currentLevel = level;
+          if (level === 1) this.score = 0;
+          this.scoreAtLevelStart = this.score;
+          this.onScoreUpdate(this.score);
+
+          const levelData = generateLevel(this.currentLevel);
+          this.platforms = levelData.platforms;
+          this.enemies = levelData.enemies;
+          this.goal = levelData.goal;
+          this.currentTheme = levelData.theme;
+
+          this.player = this.createInitialPlayer();
+          this.cameraX = 0;
+          this.status = GameStatus.PLAYING;
+        }
+
+        nextLevel() {
+          this.start(this.currentLevel + 1);
+        }
+
+        retryCurrentLevel() {
+          this.score = this.scoreAtLevelStart;
+          this.start(this.currentLevel);
+        }
+
+        handleInput(key, isPressed) {
+          this.keys[key] = isPressed;
+        }
+
+        update() {
+          if (this.status !== GameStatus.PLAYING) return;
+
+          // Movement
+          if (this.keys['ArrowLeft']) {
+            this.player.vx = -PHYSICS.MOVE_SPEED;
+            this.player.facingRight = false;
+          } else if (this.keys['ArrowRight']) {
+            this.player.vx = PHYSICS.MOVE_SPEED;
+            this.player.facingRight = true;
+          } else {
+            this.player.vx = 0;
+          }
+
+          if (this.keys['ArrowUp'] && this.player.isGrounded) {
+            this.player.vy = PHYSICS.JUMP_FORCE;
+            this.player.isGrounded = false;
+          }
+
+          this.player.vy += PHYSICS.GRAVITY;
+          this.player.vy = Math.min(this.player.vy, PHYSICS.MAX_FALL_SPEED);
+
+          this.player.x += this.player.vx;
+          this.checkCollisionsX();
+
+          this.player.y += this.player.vy;
+          this.player.isGrounded = false;
+          this.checkCollisionsY();
+
+          this.updateEnemies();
+
+          if (this.goal && this.checkAABB(this.player, this.goal)) {
+            this.completeLevel();
+          }
+
+          if (this.player.y > CANVAS_HEIGHT) {
+            this.die();
+          }
+
+          this.cameraX = Math.max(0, this.player.x - CANVAS_WIDTH / 2 + this.player.w / 2);
+        }
+
+        checkCollisionsX() {
+          for (const plat of this.platforms) {
+            if (this.checkAABB(this.player, plat)) {
+              if (this.player.vx > 0) this.player.x = plat.x - this.player.w;
+              else if (this.player.vx < 0) this.player.x = plat.x + plat.w;
+              this.player.vx = 0;
+            }
+          }
+        }
+
+        checkCollisionsY() {
+          for (const plat of this.platforms) {
+            if (this.checkAABB(this.player, plat)) {
+              if (this.player.vy > 0) {
+                this.player.y = plat.y - this.player.h;
+                this.player.isGrounded = true;
+                this.player.vy = 0;
+              } else if (this.player.vy < 0) {
+                this.player.y = plat.y + plat.h;
+                this.player.vy = 0;
+              }
+            }
+          }
+        }
+
+        updateEnemies() {
+          for (const enemy of this.enemies) {
+            if (enemy.isDead) continue;
+            enemy.x += enemy.vx;
+            if (enemy.x > enemy.patrolEnd || enemy.x < enemy.patrolStart) enemy.vx *= -1;
+
+            if (this.checkAABB(this.player, enemy)) {
+              const hitFromAbove = this.player.vy > 0 && (this.player.y + this.player.h - enemy.y) < 25;
+              if (hitFromAbove) {
+                enemy.isDead = true;
+                this.player.vy = PHYSICS.JUMP_FORCE * 0.5;
+                this.score += 100;
+                this.onScoreUpdate(this.score);
+              } else {
+                this.die();
+              }
+            }
+          }
+        }
+
+        checkAABB(r1, r2) {
+          return r1.x < r2.x + r2.w && r1.x + r1.w > r2.x && r1.y < r2.y + r2.h && r1.y + r1.h > r2.y;
+        }
+
+        die() {
+          this.status = GameStatus.GAME_OVER;
+          this.onGameOver();
+        }
+
+        completeLevel() {
+          if (this.currentLevel < this.maxLevels) {
+            this.status = GameStatus.LEVEL_COMPLETE;
+            this.onLevelComplete();
+          } else {
+            this.status = GameStatus.VICTORY;
+            this.onVictory();
+          }
+        }
+
+        draw() {
+          this.ctx.fillStyle = this.currentTheme.SKY;
+          this.ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+          this.ctx.save();
+          this.ctx.translate(-this.cameraX, 0);
+
+          for (const plat of this.platforms) {
+            this.ctx.fillStyle = this.currentTheme.PLATFORM;
+            this.ctx.fillRect(plat.x, plat.y, plat.w, plat.h);
+            this.ctx.fillStyle = this.currentTheme.GROUND_TOP;
+            this.ctx.fillRect(plat.x, plat.y, plat.w, 10);
+          }
+
+          for (const enemy of this.enemies) {
+            if (enemy.isDead) continue;
+            this.ctx.fillStyle = COLORS.ENEMY;
+            this.ctx.fillRect(enemy.x, enemy.y, enemy.w, enemy.h);
+            this.ctx.fillStyle = 'white';
+            const eyeOffset = enemy.vx > 0 ? 25 : 5;
+            this.ctx.fillRect(enemy.x + eyeOffset, enemy.y + 10, 10, 10);
+          }
+
+          if (this.goal) {
+            this.ctx.fillStyle = COLORS.GOAL;
+            this.ctx.fillRect(this.goal.x, this.goal.y, this.goal.w, this.goal.h);
+            this.ctx.beginPath();
+            this.ctx.moveTo(this.goal.x + 20, this.goal.y);
+            this.ctx.lineTo(this.goal.x + 60, this.goal.y + 20);
+            this.ctx.lineTo(this.goal.x + 20, this.goal.y + 40);
+            this.ctx.fillStyle = 'red';
+            this.ctx.fill();
+          }
+
+          if (this.isImageLoaded) {
+            this.ctx.save();
+            if (!this.player.facingRight) {
+              this.ctx.translate(this.player.x + this.player.w, this.player.y);
+              this.ctx.scale(-1, 1);
+              this.ctx.drawImage(this.playerImage, 0, 0, this.player.w, this.player.h);
+            } else {
+              this.ctx.drawImage(this.playerImage, this.player.x, this.player.y, this.player.w, this.player.h);
+            }
+            this.ctx.restore();
+          } else {
+            this.ctx.fillStyle = 'red';
+            this.ctx.fillRect(this.player.x, this.player.y, this.player.w, this.player.h);
+          }
+
+          this.ctx.restore();
+        }
+      }
+
+      // --- APP COMPONENT ---
+      const App = () => {
+        const canvasRef = useRef(null);
+        const engineRef = useRef(null);
+        const [status, setStatus] = useState(GameStatus.MENU);
+        const [score, setScore] = useState(0);
+
+        useEffect(() => {
+          if (!canvasRef.current) return;
+          const ctx = canvasRef.current.getContext('2d');
+          if (!ctx) return;
+
+          const engine = new GameEngine(
+            ctx,
+            () => setStatus(GameStatus.GAME_OVER),
+            () => setStatus(GameStatus.VICTORY),
+            () => setStatus(GameStatus.LEVEL_COMPLETE),
+            (s) => setScore(s)
+          );
+          engineRef.current = engine;
+
+          let animationFrameId;
+          const render = () => {
+            engine.update();
+            engine.draw();
+            animationFrameId = requestAnimationFrame(render);
+          };
+          render();
+          return () => cancelAnimationFrame(animationFrameId);
+        }, []);
+
+        useEffect(() => {
+          const handleKeyDown = (e) => engineRef.current?.handleInput(e.code, true);
+          const handleKeyUp = (e) => engineRef.current?.handleInput(e.code, false);
+          window.addEventListener('keydown', handleKeyDown);
+          window.addEventListener('keyup', handleKeyUp);
+          return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('keyup', handleKeyUp);
+          };
+        }, []);
+
+        const startGame = () => {
+          engineRef.current?.start(1);
+          setStatus(GameStatus.PLAYING);
+        };
+
+        const nextLevel = () => {
+          engineRef.current?.nextLevel();
+          setStatus(GameStatus.PLAYING);
+        };
+
+        const retryLevel = () => {
+          engineRef.current?.retryCurrentLevel();
+          setStatus(GameStatus.PLAYING);
+        };
+
+        return (
+          <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
+            <div className="relative rounded-lg overflow-hidden shadow-2xl border-4 border-gray-700 bg-black">
+              <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="block bg-sky-300" />
+
+              {status === GameStatus.PLAYING && (
+                <div className="absolute top-4 left-4 bg-black/50 text-white px-4 py-2 rounded font-mono text-xl border border-white/20">
+                  スコア: {score.toString().padStart(5, '0')}
+                </div>
+              )}
+
+              <div className="absolute bottom-2 right-4 text-white/50 text-xs font-mono">
+                矢印キー: 移動 & ジャンプ
+              </div>
+
+              {status === GameStatus.MENU && (
+                <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center text-white p-8 animate-fade-in">
+                  <h1 className="text-5xl font-bold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-blue-500 drop-shadow-lg text-center">
+                    ごまめちゃんの<br/>大冒険
+                  </h1>
+                  <p className="mb-8 text-gray-300 max-w-md text-center">
+                    全4ステージの冒険へ出発しよう！<br/>敵を踏んで倒して、ゴールを目指せ！
+                  </p>
+                  <div className="bg-gray-800 p-4 rounded-lg mb-8 border border-gray-700 flex items-center gap-4">
+                     <div className="w-12 h-12 bg-gray-700 rounded flex items-center justify-center text-2xl">🏃‍♀️</div>
+                     <div className="text-sm text-gray-400"><span className="font-bold text-white">キャラクター:</span><br/>ごまめちゃん（ピクセル生成済）</div>
+                  </div>
+                  <button onClick={startGame} className="group relative px-8 py-4 bg-green-500 hover:bg-green-600 text-white font-bold rounded-lg text-xl transition-all transform hover:scale-105 flex items-center gap-3">
+                    <Icons.Play /> ゲームスタート
+                  </button>
+                </div>
+              )}
+
+              {status === GameStatus.GAME_OVER && (
+                <div className="absolute inset-0 bg-red-900/90 flex flex-col items-center justify-center text-white animate-fade-in gap-4">
+                  <div className="text-red-300"><Icons.AlertCircle /></div>
+                  <h2 className="text-5xl font-bold">ゲームオーバー</h2>
+                  <p className="text-xl text-red-200 mb-4">最終スコア: {score}</p>
+                  <div className="flex gap-4">
+                    <button onClick={retryLevel} className="px-6 py-3 bg-white text-red-900 hover:bg-gray-100 font-bold rounded-lg text-lg transition-transform transform hover:scale-105 flex items-center gap-2">
+                      <Icons.RotateCcw /> このステージからやり直す
+                    </button>
+                    <button onClick={startGame} className="px-6 py-3 bg-red-800 text-red-100 hover:bg-red-700 font-bold rounded-lg text-lg transition-colors flex items-center gap-2">
+                      <Icons.Repeat /> 最初から
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {status === GameStatus.LEVEL_COMPLETE && (
+                <div className="absolute inset-0 bg-blue-900/80 flex flex-col items-center justify-center text-white animate-fade-in">
+                  <h2 className="text-6xl font-bold mb-4 text-yellow-400 drop-shadow-[0_5px_5px_rgba(0,0,0,0.5)] tracking-wider">GOAL!</h2>
+                  <p className="text-xl mb-8 text-blue-100">ステージクリア！</p>
+                  <button onClick={nextLevel} className="px-8 py-4 bg-yellow-400 text-yellow-900 hover:bg-yellow-300 font-bold rounded-lg text-xl transition-all transform hover:scale-105 flex items-center gap-3">
+                    次のステージへ <Icons.ArrowRight />
+                  </button>
+                </div>
+              )}
+
+              {status === GameStatus.VICTORY && (
+                <div className="absolute inset-0 bg-yellow-900/95 flex flex-col items-center justify-center text-white animate-fade-in text-center p-4">
+                  <h2 className="text-4xl font-bold mb-4 text-yellow-400 drop-shadow-md">全ステージクリア！</h2>
+                  <div className="relative w-72 h-auto max-h-[400px] mb-6 rounded-xl overflow-hidden border-4 border-yellow-400 shadow-2xl bg-black/20">
+                     <img src="victory.png" alt="Thank you for playing!" className="w-full h-full object-contain" onError={(e) => { e.currentTarget.src = "https://via.placeholder.com/400x300/FBBF24/000000?text=Thank+You!"; e.currentTarget.onerror = null; }} />
+                  </div>
+                  <p className="text-2xl mb-6 text-white font-bold drop-shadow-md">ここまで遊んでくれてありがとう</p>
+                  <p className="text-xl mb-6 text-yellow-100 font-mono">最終スコア: {score}</p>
+                  <button onClick={startGame} className="px-8 py-3 bg-yellow-400 text-yellow-900 hover:bg-yellow-300 font-bold rounded-lg text-lg transition-colors flex items-center gap-2 shadow-lg">
+                    <Icons.RotateCcw /> 最初から遊ぶ
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      };
+
+      // --- MOUNT ---
+      const rootElement = document.getElementById('root');
+      if (rootElement) {
+        const root = ReactDOM.createRoot(rootElement);
+        root.render(<App />);
+      }
+    </script>
 <script type="module" src="/index.tsx"></script>
 </body>
 </html>
