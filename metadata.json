@@ -1,0 +1,5 @@
+{
+  "name": "Anime Jumper",
+  "description": "A side-scrolling action game featuring a custom character sprite, physics-based platforming, and enemy encounters.",
+  "requestFramePermissions": []
+}
